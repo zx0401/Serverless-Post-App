@@ -1,0 +1,443 @@
+service:
+  name: serverless-post-app
+
+plugins:
+  - serverless-webpack
+  - serverless-iam-roles-per-function
+  - serverless-plugin-canary-deployments
+  - serverless-aws-documentation
+  - serverless-reqvalidator-plugin
+  - serverless-plugin-tracing
+
+package:
+  individually: false
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'us-east-2'}
+
+  tracing:
+    lambda: true
+    apiGateway: true
+    iamRoleStatements:            # Permissions here or under every function to trace
+      - Effect: 'Allow'           # xray tracing permissions
+        Action:
+          - 'xray:PutTraceSegments'             # Trace Segments
+          - 'xray:PutTelemetryRecords'          # Telemetry
+        Resource:
+          - '*'
+
+  environment:
+    POSTS_TABLE: Posts-${self:provider.stage}
+    USERS_TABLE: Users-${self:provider.stage}
+    FOLLOWING_TABLE: Following-${self:provider.stage}
+    FOLLOWER_INDEX: FollowerIndex
+    POSTS_S3_BUCKET: serverless-posts-zxin${self:provider.stage}
+    SIGNED_URL_EXPIRATION: 300
+    JWKS_URL: https://dev-j28i8kn3.auth0.com/.well-known/jwks.json
+
+custom:
+  documentation:
+    api:
+      info:
+        version: v1.0.0
+        title: Posts API
+        description: Serverless application for posts
+    models:
+      - name: CreatePostRequest
+        contentType: application/json
+        schema: ${file(models/create-post-request.json)}
+
+functions:
+
+  Auth:
+    handler: src/lambda/auth/auth0Authorizer.handler
+
+  GetPosts:
+    handler: src/lambda/http/getPosts.handler
+    events:
+      - http:
+          method: get
+          path: posts
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Get all posts for a user
+            description: Get all posts for a user
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource:
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}
+          - arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FOLLOWING_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.USERS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  CreatePost:
+    handler: src/lambda/http/createPost.handler
+    events:
+      - http:
+          method: post
+          path: posts
+          cors: true
+          authorizer: Auth
+          reqValidatorName: RequestBodyValidator
+          documentation:
+            summary: Create a post
+            description: Create a new post
+            requestModels:
+              'application/json': CreatePostRequest
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+  
+  AddFollowing:
+    handler: src/lambda/http/addFollowing.handler
+    events:
+      - http:
+          method: post
+          path: following/{followingId}
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Add a following for the user
+            description: Add a new following for the user
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FOLLOWING_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.USERS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  UpdateUserLastLogin:
+    handler: src/lambda/http/updateUserLastLogin.handler
+    events:
+      - http:
+          method: put
+          path: users
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Update the user last login.
+            description: Update the user last login.
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:PutItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.USERS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  DeletePost:
+    handler: src/lambda/http/deletePost.handler
+    events:
+      - http:
+          method: delete
+          path: posts/{postId}
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Delete a post
+            description: Delete a post
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:DeleteItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  DeleteFollowing:
+    handler: src/lambda/http/deleteFollowing.handler
+    events:
+      - http:
+          method: delete
+          path: following/{followingId}
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Delete a following
+            description: Delete a following
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:DeleteItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FOLLOWING_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  GenerateUploadUrl:
+    handler: src/lambda/http/generateUploadUrl.handler
+    events:
+      - http:
+          method: post
+          path: posts/{postId}/attachment
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Generate upload url for the post attachment
+            description: Generate upload url for the post attachment
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:UpdateItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+          - s3:GetObject
+        Resource: arn:aws:s3:::${self:provider.environment.POSTS_S3_BUCKET}/*
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  GetPost:
+    handler: src/lambda/http/getPost.handler
+    events:
+      - http:
+          method: get
+          path: posts/{postId}
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Get a pos
+            description: Get a post
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.POSTS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  GetFollowing:
+    handler: src/lambda/http/getFollowing.handler
+    events:
+      - http:
+          method: get
+          path: following
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Get all the following for the user
+            description: Get all the following for the user
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FOLLOWING_TABLE}
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.USERS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+  GetFollowers:
+    handler: src/lambda/http/getFollowers.handler
+    events:
+      - http:
+          method: get
+          path: followers
+          cors: true
+          authorizer: Auth
+          documentation:
+            summary: Get all the followers for the user
+            description: Get all the followers for the user
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.FOLLOWING_TABLE}/index/${self:provider.environment.FOLLOWER_INDEX}
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+        Resource: arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.USERS_TABLE}
+      - Effect: Allow
+        Action:
+          - codedeploy:*
+        Resource:
+          - '*'
+    deploymentSettings:
+      type: Linear10PercentEvery1Minute
+      alias: Live
+
+resources:
+  Resources:
+    GatewayResponseDefault4XX:
+      Type: AWS::ApiGateway::GatewayResponse
+      Properties:
+        ResponseParameters:
+          gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+          gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+          gatewayresponse.header.Access-Control-Allow-Methods: "'GET,OPTIONS,POST'"
+        ResponseType: DEFAULT_4XX
+        RestApiId:
+          Ref: ApiGatewayRestApi
+
+    PostsTable:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: postId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: postId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.POSTS_TABLE}
+
+    UsersTable:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.USERS_TABLE}
+
+    FollowingTable:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: userId
+            AttributeType: S
+          - AttributeName: followingId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: userId
+            KeyType: HASH
+          - AttributeName: followingId
+            KeyType: RANGE
+        BillingMode: PAY_PER_REQUEST
+        TableName: ${self:provider.environment.FOLLOWING_TABLE}
+        GlobalSecondaryIndexes:
+          - IndexName: ${self:provider.environment.FOLLOWER_INDEX}
+            KeySchema:
+            - AttributeName: followingId
+              KeyType: HASH
+            - AttributeName: userId
+              KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    AttachmentsBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:provider.environment.POSTS_S3_BUCKET}
+        CorsConfiguration:
+          CorsRules:
+            -
+              AllowedOrigins:
+                - '*'
+              AllowedHeaders:
+                - '*'
+              AllowedMethods:
+                - GET
+                - PUT
+                - POST
+                - DELETE
+                - HEAD
+              MaxAge: 3000
+
+    BucketPolicy:
+      Type: AWS::S3::BucketPolicy
+      Properties:
+        PolicyDocument:
+          Id: MyPolicy
+          Version: "2012-10-17"
+          Statement:
+            - Sid: PublicReadForGetBucketObjects
+              Effect: Allow
+              Principal: '*'
+              Action: 's3:GetObject'
+              Resource: 'arn:aws:s3:::${self:provider.environment.POSTS_S3_BUCKET}/*'
+        Bucket: !Ref AttachmentsBucket
+
+    RequestBodyValidator:
+      Type: AWS::ApiGateway::RequestValidator
+      Properties:
+        Name: 'request-body-validator'
+        RestApiId:
+          Ref: ApiGatewayRestApi
+        ValidateRequestBody: true
+        ValidateRequestParameters: false

@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "title": "post",
+  "type": "object",
+  "properties": {
+    "content": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "required": [
+    "content"
+  ],
+  "additionalProperties": false
+}
